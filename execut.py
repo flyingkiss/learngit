@@ -181,7 +181,7 @@ def validpair(cards):
     connector=dict((x,0) for x in range(1,14));  #顺子 至少俩张张连续牌
     estimate(muCard,point,color,pairs,connector)
 
-    validEs={'one':0,'two':0,'three':0,'flush4':0,'flush3':0,'straight4':0,'straight3':0};
+    validEs={'one':0,'two':0,'three':0,'flush4':0,'flush3':0, 'flush2':0, 'straight2':0, 'straight4':0, 'straight3':0};
     F=flush(color,4)
     if F[1]:
         #print "明4张同花听牌" 
@@ -190,6 +190,10 @@ def validpair(cards):
     if F[1]:
         #print "明3张同花听牌" # 自己的同花听牌没价值了，很多人都会有
         validEs['flush3']=1
+    F=flush(color,2)
+    if F[1]:
+        #print "明3张同花听牌"  # 不能让轻易看牌
+        validEs['flush2']=1
 
 
     for i in range(13,4,-1): # i 13~5  A~6 最小顺按23456
@@ -198,6 +202,8 @@ def validpair(cards):
             if len(point[j])>0:
                 m=m+1
                 s.append(j)
+            if m >=2:
+                validEs['straight2'] = 1
             if m >=3:
                 validEs['straight3'] = 1
             if m >=4:

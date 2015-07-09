@@ -2,7 +2,9 @@
 # coding=utf-8
 
 import precards
-import postcards
+import flop_round
+import turn_round
+import river_round
 
 
 class GAMP:
@@ -10,7 +12,7 @@ class GAMP:
         self.Maxblind = 40  # 大盲注数起手目 40
         self.mypid = 0
         self.players = {}  # jetton mony bet flag turn cards action
-        self.count = 0  # 第几轮了
+        self.count = -1  # 第几轮了
         self.times = 0  # 本轮圈数times 起始1
         self.pot = 0  # 池底筹码         
 
@@ -18,62 +20,44 @@ class GAMP:
         self.last = 0  # 有几个人，只统计活人  
 
         self.prebet = 0  # 跟注额
-        self.preraise = 0  # 上次加注额  
-        self.minraise = max(self.Maxblind, self.preraise)  # 最小加注额
+        self.minraise = self.Maxblind  # 最小加注额
         self.live = []  # 只保留参加比赛的人的pid
         self.rec = []
-        self.prerec = {}
 
         self.games = 0  # 统计局数
         self.persons = 8  #
 
-    def getLive(self):
-        try:
-            if self.count == 0 and self.times == 1:  # action里我后面的人还边没记录
-                self.live = []  # 一局清空一次
-                for pid in self.players.keys():
-                    if self.players[pid].jetton >= self.Maxblind:  # 筹码小于大盲注认为已本场出局
-                        self.live.append(pid)
-                        self.prerec[pid] = ''  # prerec 一局清空一次
-                self.persons = len(self.live)  # 几人桌？
+        self.preflop_bet = {}
+        self.gp = False
+        self.cp = False
 
-            elif self.count > 0 and self.times == 1:
-                temp = []
-                for pid in self.live:
-                    if 'fold' != self.players[pid].action[self.count - 1]:  # 上轮的操作是fold的去掉
-                        temp.append(pid)
+        self.now_money = 0  # 这局开始时我的money 大小盲位把盲注加上
+        self.last_money = 4000
+        self.pre_AL = False
+        self.post_AL = False
+        self.post2_AL = False
+        self.post3_AL = False
+        self.success_AL = 0
 
-                self.live = temp
-            else:
-                temp = []
-                for pid in self.live:
-                    if self.prerec[pid] != 'fold':  # 本轮上圈的操作是fold的去掉,self.players此时还未更新，仍是上圈记录
-                        temp.append(pid)
-                self.live = temp
-        except:
-            self.live = []  # 一局清空一次
-            for pid in self.players.keys():
-                if self.players[pid].jetton >= self.Maxblind:  # 筹码小于大盲注认为已本场出局
-                    self.live.append(pid)
+        self.db = {}
+        
 
     def getPos(self):  # 统计自己的位置，活人数
-
+        
         self.pos = len(self.live) + 1
-        if self.times == 1:
-            for pid in self.live:
-                if self.players[pid].action[self.count] == '' or self.players[pid].action[self.count] == 'blind':
-                    self.pos -= 1
-
+        for pid in self.live:
+            if self.players[pid].action[self.count] == '' or self.players[pid].action[self.count] == 'blind':
+                self.pos -= 1
         self.last = min(len(self.live), 8)  # 竞争对手数量
 
-    def getPreraise(self):
+    def getMinraise(self):  # 应该是bet最多的减去第二多的 吧
         bet2 = bet1 = self.players[self.mypid].bet
         p = []
         rec = self.rec
         for s in rec:
             p.append(s[1])
         if 'raise' not in p:
-            self.preraise = self.Maxblind
+            preraise = self.Maxblind
         else:
             for i in range(len(rec) - 1, -1, -1):
                 if rec[i][1] == 'raise':
@@ -83,7 +67,8 @@ class GAMP:
                             bet1 = self.players[rec[j][0]].bet
                             break
                     break
-            self.preraise = max(bet2 - bet1, self.Maxblind)
+            preraise = max(bet2 - bet1, self.Maxblind)
+        self.minraise = max(self.Maxblind, preraise) #得到最小加注额
 
     def getRec(self):  # 提取rec按找出牌顺序，还有preraise即上次加注额        
 
@@ -103,126 +88,145 @@ class GAMP:
                 t2.append([s[0], self.players[s[0]].action[self.count]])
 
         self.rec = t2 + t1
-
-    def statics(self):
-        # CB持续加注，float_CB 面对持续加注时的弃牌率  STL的次数，fold_STL 面对STL的弃牌率
-
-        if self.count == 0:
+        
+    def getPreround(self):
+        if self.count == 0 and self.gp == True:  # 新的一局第一轮
+            for pid in self.preflop_bet.keys():
+                if self.preflop_bet[pid] < 40:
+                # bet>=40 就认为是入局了，因为如果后面人都fold了我就看不到了
+                # 有人raise 或call过第二圈或第二轮notify就可以看到了
+                    try:
+                        self.players[pid].static['pre_fold'] += 1                    
+                    except:
+                        pass
+            for pid in self.players.keys():  # 更新VPIP
+                self.players[pid].ft['VPIP'] = (self.games - self.players[pid].static['pre_fold']) / float(self.games) 
+            self.gp = False
+            
+        if self.count <=1:  # 这样子就知道后面的人是否fold了
             for pid in self.players.keys():
-                if self.times == 1 and self.players[pid].action[self.count] not in ['', 'blind', 'fold']:
-                    self.players[pid].static['mn'] += 1
-                    if self.players[pid].static['mn'] == 51:  # 统计最近50入局的平均押注额
-                        self.players[pid].static['all_bet'] -= self.players[pid].ft['aver_bet']
-                        self.players[pid].static['mn'] = 50
-                    self.players[pid].static['all_bet'] += self.players[pid].static['pre_bet']
-                    self.players[pid].ft['aver_bet'] = float(self.players[pid].static['all_bet']) / \
-                                                       self.players[pid].static['mn']
-                self.players[pid].static['pre_bet'] = self.players[pid].bet
-        re = []
-        for s in self.rec:
-            re.append(s[0])
-        for pid in re:
-            if self.players[pid].action[self.count] == 'fold':
-                if self.count == 0:  # 如果是翻牌前
-                    self.players[pid].static['pre_fold'] += 1
-                self.players[pid].static['all_fold'] += 1
+                self.preflop_bet[pid] = self.players[pid].bet
 
-            elif self.players[pid].action[self.count] in ['raise', 'all_in']:
-                if self.count == 0:  # 一轮多次加注呢，PFR可能大过VPIP了
+    def getFt(self, pid, count):
+        if count == 0:
+            pid_set = []
+            action_set = []
+            for s in self.rec:
+                if s[0] != pid:
+                    pid_set.append(s[0])
+                    action_set.append(s[1])
+                else:
+                    break
+
+        if self.players[pid].action[count] in ['raise', 'all_in']:
+                if count == 0:  # 一轮多次加注呢，PFR可能大过VPIP了
                     self.players[pid].static['pre_raise'] += 1
-                self.players[pid].static['all_raise'] += 1
-            elif self.players[pid].action[self.count] == 'call':
-                self.players[pid].static['all_call'] += 1
-
-            self.players[pid].static['all_action'] += 1
-
-            self.players[pid].ft['VPIP'] = (self.games - self.players[pid].static['pre_fold']) / float(
-                self.games)  # 入局率
-            self.players[pid].ft['PFR'] = (self.players[pid].static['pre_raise']) / float(self.games)  # 翻牌前的加注率
-            self.players[pid].ft['AF'] = self.players[pid].static['all_raise'] / float(
-                self.players[pid].static['all_call'] + 1.0)  # 激进度
-            self.players[pid].ft['BB/100'] = self.players[pid].jetton + self.players[pid].money - 6000  # 盈利
-
-        flag = False
-        for i in range(len(self.rec)):
-            # 持续加注的行为
-            if self.rec[i][1] in ['raise', 'all_in'] and self.prerec[self.rec[i][0]] == 'raise':  # 连两圈都是加注
-                self.players[self.rec[i][0]].static['CB'] += 1  # 统计持续加注的行为
-                self.players[self.rec[i][0]].ft['CB'] = self.players[self.rec[i][0]].static['CB'] / float(
-                    self.players[self.rec[i][0]].static['all_action'])
-
-                for j in range(i + 1, len(self.rec)):  # 后面人面对连续加注的行为
-                    self.players[self.rec[j][0]].static['face_CB'] += 1  # 面对连续加注的次数
-                    if self.rec[j][1] == 'fold':
-                        self.players[self.rec[j][0]].static['fold_CB'] += 1  # 连续加注后吓退的，这也得看加注加多少啊 要加就加 2/3 ~ 3/4的pot
-                        self.players[self.rec[j][0]].ft['fold_CB'] = self.players[self.rec[j][0]].static[
-                                                                         'fold_CB'] / float(
-                            self.players[self.rec[j][0]].static['face_CB'])  # 面对连续加注下的弃牌率
-            # 反加注的行为
-            if self.rec[i][1] == 'raise':
-                if flag == False:
-                    flag = True
-                    continue
-                elif flag == True:  # 反加注行为     两个玩家加注叫做反加注
-                    self.players[self.rec[i][0]].static['3_bet'] += 1  # 玩家i的反加注行为
-                    self.players[self.rec[i][0]].ft['3_bet'] = self.players[self.rec[i][0]].static['3_bet'] \
-                                                               / float(self.players[self.rec[i][0]].static['all_action'])
-                    for j in range(i + 1, len(self.rec)):
-                        self.players[self.rec[j][0]].static['face_3_bet'] += 1  # 面对连续加注的次数
-                        if self.rec[j][1] == 'fold':
-                            self.players[self.rec[j][0]].static['fold_3_bet'] += 1  # 连续加注后吓退的，这也得看加注加多少啊 要加就加 2/3 ~ 3/4的pot
-                            self.players[self.rec[j][0]].ft['fold_3_bet'] = self.players[self.rec[j][0]].static[
-                                    'fold_3_bet']/float(self.players[self.rec[j][0]].static['face_3_bet'])  # 面对连续加注下的弃牌率
-            if self.rec[i][1] == 'raise' and gamp.count == 0:
-                for j in range(i+1, len(self.rec)):
-                    self.players[self.rec[j][0]].static['face_raise'] += 1             
-                    if self.rec[j][1] == 'fold':
-                        self.players[self.rec[j][0]].static['fold_raise'] += 1
-                        self.players[self.rec[j][0]].ft['fold_raise'] = self.players[self.rec[j][0]].static[
-                                    'fold_raise']/float(self.players[self.rec[j][0]].static['face_raise'])  # 面对加注下的弃牌率
-                        self.players[self.rec[j][0]].cheat.append(self.players[self.rec[i][0]].bet -
-                                                                  self.players[self.rec[j][0]].bet)
-                    if self.rec[j][1] == 'raise':
-                        break      
-
-    def updateStatics(self):
-        self.getLive()
-        self.getRec()
-        self.statics()
-        self.prerec = {}
+                    if self.players[pid].flag != '':
+                        self.players[pid].AL[self.players[pid].flag] += 1
+                    if action_set.count('raise')> 0:  # 翻牌前raise to raise的次数
+                        self.players[pid].ft['anti_AL'] +=1
+                else:
+                    self.players[pid].static['post_raise'] += 1
+        elif self.players[pid].action[count] == 'call':
+            if count == 0:
+                self.players[pid].static['pre_call'] += 1
+            else:
+                self.players[pid].static['post_call'] += 1
+        
+                
+    def statics(self, round_count):
+        # CB持续加注，float_CB 面对持续加注时的弃牌率  STL的次数，fold_STL 面对STL的弃牌率
+        self.getPreround()
+            
+        for pid in self.live:  # fold的人不计算，要更新上一轮的末尾行为
+            if self.cp == True and self.count > 0:
+            # 新的一轮，应该把上次末尾的人处理一次, turn大的这些人
+                if self.players[pid].turn >= self.players[self.mypid].turn:
+                    self.getFt(pid, self.count - 1)
+                else:
+                    self.getFt(pid, self.count)
+            else:
+                self.getFt(pid, self.count)
+                
+        self.cp = False
+                                  
         for pid in self.players.keys():
-            self.prerec[pid] = self.players[pid].action[self.count]
+            self.players[pid].ft['PFR'] = (self.players[pid].static['pre_raise']) \
+                                          / float(self.games - self.players[pid].static['pre_fold'] + 1.0)
+            self.players[pid].ft['BB/100'] = self.players[pid].jetton + self.players[pid].money - 4000
+            # 入场加注比
+            self.players[pid].ft['pre_AF'] = self.players[pid].static['pre_raise'] / float(
+                self.players[pid].static['pre_call'] + 1.0)  # pre激进度
+            self.players[pid].ft['post_AF'] = self.players[pid].static['post_raise'] / float(
+                self.players[pid].static['post_call'] + 1.0)  # post激进度
+            
 
-    def update(self, mypid, players, count, total_pot):
+    def updateStatics(self, round_count):
+        die_pid = []
+        for pid in self.live:  # 上轮后面fold的玩家要去掉 count == 0的时候不要变
+            if self.count > 0 and self.players[pid].action[self.count - 1] == 'fold': 
+                die_pid.append(pid)
+        self.live = list(set(self.live)-set(die_pid))
+             
+        self.getRec()
+        self.statics(round_count)
+
+        die_pid = []
+        for pid in self.live:  # 本轮前面fold的玩家去掉，本轮后面fold的玩家也要去掉
+            if self.players[pid].action[self.count] == 'fold':
+                die_pid.append(pid)
+        self.live = list(set(self.live)-set(die_pid))
+
+    def update(self, mypid, players, count, total_pot, round_count, db):
         self.Maxblind = 40
         self.pot = total_pot
         self.mypid = mypid
-
+        self.players = players
+        self.db = db
+        if self.games != round_count:  # 新的一局
+            self.persons = len(self.players)
+            self.live = self.players.keys() 
+            self.games = round_count
+            self.count = -1
+            
+            self.now_money = self.players[self.mypid].jetton + self.players[self.mypid].money
+            if self.players[self.mypid].flag == 'small blind':
+                self.now_money += 20
+            elif self.players[self.mypid].flag == 'big blind':
+                self.now_money +=40
+            if self.pre_AL == True and self.now_money > self.last_money:
+                self.success_AL +=1
+            self.last_money = self.now_money
+            
+            self.pre_AL = False
+            self.post_AL = False
+            self.post2_AL = False
+            self.post3_AL = False
+            self.gp = True   # VPIP更新标志
+            for pid in self.players.keys():
+                if self.players[pid].flag != '':
+                    self.players[pid].AL_pos[self.players[pid].flag] += 1
+        
         if self.count != count:  # 新的一轮
             self.count = count
             self.times = 1
-        elif players[mypid].action[self.count] not in ['', 'blind']:  # 我有行为时认为是第二轮
+            self.cp = True   # 新的一轮更新上次末尾人的行为
+        else:                    # 不是新的一轮，又一次询问肯定是又一圈
             self.times += 1
-        else:  # 我无行为或只有大盲注时认为是刚开局 count=0且上局第一轮就结束了
-            self.times = 1
-
-        if self.count == 0 and self.times == 1:  # 统计这是第几局了
-            self.games += 1
-
-        self.players = players
-        
-        self.updateStatics()
+                        
+            
+        self.updateStatics(round_count)   # 统计量
 
         self.prebet = 0  # 需要跟注的金额
         for pid in players.keys():
             self.prebet = max(self.prebet, players[pid].bet)
-        self.prebet = self.prebet - players[mypid].bet  # bet一局清空一次
+        self.prebet = self.prebet - players[mypid].bet  # 跟注额
 
         self.getPos()
-        self.getPreraise()
-        self.minraise = max(self.Maxblind, self.preraise)
-
-        temp = []  # 去掉自己的记录
+        self.getMinraise()
+        
+       
+        temp = [] # 多圈的情况下去掉自己上次的记录          
         for s in self.rec:
             if s[0] != self.mypid:
                 temp.append(s)
@@ -240,28 +244,51 @@ class player:
         self.jetton = jetton
         self.money = money
         self.bet = 0
+        self.new_bet = [0, 0, 0, 0]
         self.flag = flag
         self.turn = turn
         self.cards = list()
         self.action = ['', '', '', '']
+        self.AL = {'button':0, 'small blind':0, 'big blind':0}
+        self.AL_pos = {'button':0, 'small blind':0, 'big blind':0}
         self.static = dict(
-            [('pre_fold', 0), ('pre_call', 0), ('pre_raise', 0), ('3_bet', 0), ('fold_3_bet', 0), ('face_3_bet', 0),
-             ('all_call', 0), ('all_fold', 0), ('all_raise', 0), ('all_action', 0), ('CB', 0), ('fold_CB', 0),
-             ('face_raise', 0), ('fold_raise', 0), ('face_CB', 0), ('BB/100', 0), ('pre_bet', 0), ('all_bet', 0), ('mn', 0)])
+            [('pre_fold', 0), ('pre_call', 0), ('pre_raise', 0), ('bluff_pos', 0),
+            ('post_call', 0), ('post_raise', 0), ('check_raise', 0)])
         self.ft = dict(
-            [('VPIP', 0), ('PFR', 0), ('AF', 0), ('3_bet', 0), ('STL', 0), ('fold_STL', 0), ('fold_3_bet', 0), \
-             ('CB', 0), ('fold_CB', 0), ('BB/100', 0), ('aver_bet', 0), ('fold_raise', 0), ('call_raise', 0)])
-        self.cheat = []
+            [('VPIP', 0), ('PFR', 0), ('pre_AF', 0), ('post_AF', 0), ('anti_AL', 0),  # 比大家平均水平大很多就说明是cheat
+             ('BB/100', 0)])
 
+def action(hold_card, flop, selfid, players, act_count, total_pot, round_count, gamp, db):
 
-def action(hold_card, flop, selfid, players, act_count, total_pot, gamp):
-    gamp.update(selfid, players, act_count, total_pot)
+    k = gamp.games
+    gamp.update(selfid, players, act_count, total_pot, round_count, db)
     holeCard, muCard = getCards(hold_card, flop)
-    if act_count == 0:
-        return precards.action1(holeCard, gamp)
-    elif act_count > 0:  # muCard[0:3]
-        return postcards.action2(holeCard, muCard, gamp)
-
+    
+    '''
+    fo = open('ft' + str(selfid) + '.txt', 'a')
+    fo.write(str(gamp.games)+'(' + str(gamp.times) + ')' +': '+str(gamp.players[selfid].ft)+'\n')
+    fo.close()
+    fo = open('static' + str(selfid)+'.txt', 'a')
+    fo.write(str(gamp.games)+ ': '+str(gamp.players[selfid].static)+'\n')
+    fo.close()
+    fo = open('_AL' + str(selfid) + '.txt', 'a')
+    fo.write(str(gamp.games) + ': '+str(gamp.players[selfid].AL)+' '+ str(gamp.players[selfid].AL_pos)+'\n')
+    fo.close()
+    '''
+    try:
+        if act_count == 0:
+            reply = precards.action(holeCard, gamp)
+        elif act_count == 1:  # muCard[0:3]
+            reply = flop_round.action(holeCard, muCard, gamp)
+        elif act_count == 2:
+            reply = turn_round.action(holeCard, muCard, gamp)
+        elif act_count == 3:
+            reply = river_round.action(holeCard, muCard, gamp)
+        if reply == None:
+            reply = 'fold'
+    except:
+        return 'fold'
+    return reply
 
 def getCards(holdcard, flop):  # flop? flop顺序是个啥，新翻的牌在前在后？
     color = {'SPADES': 1, 'HEARTS': 2, 'CLUBS': 3, 'DIAMONDS': 4}
@@ -302,7 +329,7 @@ if __name__ == '__main__':
     players['111'] = player(1960, 4000, '', 3)
     players['111'].action[count] = 'call'
     players['111'].turn = 3
-    players['111'].bet = 40
+    players['111'].bet = 0
 
     players['222'] = player(2000, 4000, '', 4)
     players['222'].action[count] = 'fold'
@@ -310,33 +337,34 @@ if __name__ == '__main__':
     players['222'].bet = 0
 
     players['333'] = player(1920, 4000, '', 5)
-    players['333'].action[count] = 'raise'
+    players['333'].action[count] = 'fold'
     players['333'].turn = 5
-    players['333'].bet = 80
+    players['333'].bet = 0
     players['444'] = player(1920, 4000, '', 6)
-    players['444'].action[count] = 'call'
+    players['444'].action[count] = 'fold'
     players['444'].turn = 6
-    players['444'].bet = 80
+    players['444'].bet = 0
 
     players['555'] = player(2000, 4000, '', 7)
     players['666'] = player(2000, 4000, '', 8)
 
     holdcard = []
-    holdcard.append(porker('HEARTS', '6'))
+    holdcard.append(porker('HEARTS', '4'))
     holdcard.append(porker('DIAMONDS', 'K'))
     flop = []
 
-    print (action(holdcard, flop, mypid, players, count, total_pot, gamp))
-    print (gamp.rec)
+    print (action(holdcard, flop, mypid, players, 0, total_pot, 23, gamp))
+    print gamp.rec
+
 
     # 上一圈后面的信息
     players['555'].bet = 200
     players['555'].jeeton = 1880
     players['555'].action[count] = 'raise'
     players['555'].turn = 7
-    players['666'].bet = 200
+    players['666'].bet = 0
     players['666'].jeeton = 1880
-    players['666'].action[count] = 'call'
+    players['666'].action[count] = 'fold'
     players['666'].turn = 8
 
     players['777'].bet = 200
@@ -364,5 +392,5 @@ if __name__ == '__main__':
     players['444'].action[count] = 'call'
     players['444'].turn = 6
 
-    print (action(holdcard, flop, mypid, players, count, total_pot, gamp))
-    print (gamp.rec)
+    print (action(holdcard, flop, mypid, players, count, total_pot,23, gamp))
+
