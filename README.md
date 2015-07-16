@@ -1,3 +1,3 @@
 # learngit
-learning git works
-works done for huawei software competition
+
+code of unlimited Texas Hold'em Poker for huawei software competition 2015
